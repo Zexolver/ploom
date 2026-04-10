@@ -12,7 +12,12 @@ else:
 
 class PloomClient:
     def __init__(self):
-        self.engine = GameEngine("default.txt")
+        try:
+            self.engine = GameEngine("default.txt")
+        except Exception as e:
+            print(f"Engine Load Error: {e}")
+            sys.exit(1)
+            
         self.net = NetworkManager(f"P_{os.getpid()}")
         self.paused = True
         self.running = True
@@ -29,8 +34,6 @@ class PloomClient:
         sys.stdout.write("\033[?25l\033[?1003h") 
         
         if IS_WINDOWS: user32.ShowCursor(True)
-        else: self.old_settings = termios.tcgetattr(sys.stdin)
-        
         self.net.start()
 
     def get_fps_color(self, fps):
@@ -40,21 +43,16 @@ class PloomClient:
 
     def handle_input(self):
         move_vec, rot_delta = [0, 0], 0
-
         if IS_WINDOWS:
-            # BROAD BUFFER CLEAR: If we are playing, we don't want standard keys 
-            # building up. We only care about Tab.
             while msvcrt.kbhit():
                 key = msvcrt.getch()
-                if key == b'\t': # Tab detected
+                if key == b'\t':
                     self.paused = not self.paused
                     user32.ShowCursor(self.paused)
-                    # Warp mouse to center on unpause to prevent sudden snap
                     if not self.paused:
                         mx, my = user32.GetSystemMetrics(0)//2, user32.GetSystemMetrics(1)//2
                         user32.SetCursorPos(mx, my)
                 elif self.paused:
-                    # Arrow Keys in Windows Terminal
                     if key in (b'\xe0', b'\x00'):
                         sub = msvcrt.getch()
                         if sub == b'H': self.menu_index = (self.menu_index - 1) % len(self.menu_options)
@@ -62,19 +60,14 @@ class PloomClient:
                     elif key == b'\r': self.execute_menu()
 
             if not self.paused:
-                # 1. High-Performance Mouse Look
                 pos = Point(); user32.GetCursorPos(ctypes.byref(pos))
                 mx, my = user32.GetSystemMetrics(0)//2, user32.GetSystemMetrics(1)//2
                 rot_delta = (pos.x - mx) * 0.003
                 user32.SetCursorPos(mx, my)
-                
-                # 2. High-Performance Keyboard (Async)
-                # Using 0x8000 check ensures we see the key even if the buffer is messy
-                if user32.GetAsyncKeyState(0x57) & 0x8000: move_vec[0] = 1  # W
-                if user32.GetAsyncKeyState(0x53) & 0x8000: move_vec[0] = -1 # S
-                if user32.GetAsyncKeyState(0x41) & 0x8000: move_vec[1] = -1 # A
-                if user32.GetAsyncKeyState(0x44) & 0x8000: move_vec[1] = 1  # D
-        
+                if user32.GetAsyncKeyState(0x57) & 0x8000: move_vec[0] = 1
+                if user32.GetAsyncKeyState(0x53) & 0x8000: move_vec[0] = -1
+                if user32.GetAsyncKeyState(0x41) & 0x8000: move_vec[1] = -1
+                if user32.GetAsyncKeyState(0x44) & 0x8000: move_vec[1] = 1
         return move_vec, rot_delta
 
     def execute_menu(self):
@@ -91,71 +84,74 @@ class PloomClient:
         except: cols, rows = 80, 24
         gh = rows - 2
         
-        # Calculate FPS
         t = time.time()
         self.frame_times.append(t)
-        self.frame_times = [ft for ft in self.frame_times if t - ft < 1.0] # 1 sec window
+        self.frame_times = [ft for ft in self.frame_times if t - ft < 1.0]
         fps = len(self.frame_times)
 
         if self.paused:
             output = []
             for i, opt in enumerate(self.menu_options):
                 prefix = "> " if i == self.menu_index else "  "
-                line = f"{prefix}{opt}"
                 if i == self.menu_index:
-                    output.append(f"\033[7m {line.center(20)} \033[0m".center(cols + 8))
+                    output.append(f"\033[7m {prefix}{opt} \033[0m".center(cols + 8))
                 else:
-                    output.append(line.center(cols))
-            
+                    output.append(f"{prefix}{opt}".center(cols))
             pad = (gh - len(output)) // 2
-            final_view = ([" " * cols] * pad) + output + ([" " * cols] * (gh - pad - len(output)))
-            frame_str = "\n".join(final_view)
+            frame_str = "\n".join(([" " * cols] * pad) + output + ([" " * cols] * (gh - pad - len(output))))
         else:
-            # 3D Rendering with restored shading
             px, py, pa = self.engine.px, self.engine.py, self.engine.pa
-            fov = self.engine.fov if hasattr(self.engine, 'fov') else math.pi/3.5
+            fov = self.engine.fov
             screen_cols = []
             
+            # Peer Sprites calculation
+            visible_peers = []
+            for pid, p in self.net.peers.items():
+                if time.time() - p['last_seen'] > 2: continue
+                dx, dy = p['x'] - px, p['y'] - py
+                dist = math.sqrt(dx*dx + dy*dy)
+                angle = math.atan2(dy, dx) - pa
+                while angle > math.pi: angle -= 2*math.pi
+                while angle < -math.pi: angle += 2*math.pi
+                if abs(angle) < fov:
+                    visible_peers.append({'dist': dist, 'angle': angle})
+
             for x in range(cols):
                 ray_a = (pa - fov/2) + (x/cols) * fov
                 vx, vy = math.cos(ray_a), math.sin(ray_a)
                 d, hit = 0.1, False
                 while d < 16:
                     tx, ty = int(px + vx*d), int(py + vy*d)
-                    if self.engine.map_data[ty * self.engine.map_size + tx] == '#':
-                        hit = True; break
+                    if 0 <= tx < self.engine.map_size and 0 <= ty < self.engine.map_size:
+                        if self.engine.map_data[ty * self.engine.map_size + tx] == '#':
+                            hit = True; break
                     d += 0.05
                 
-                d_fixed = d * math.cos(ray_a - pa)
-                wh = int(gh / (d_fixed + 0.001))
-                c = max(0, (gh - wh) // 2)
-                f = gh - c - wh
+                # Sprite logic
+                p_hit, p_dist = False, 0
+                for p in visible_peers:
+                    if abs(ray_a - (pa + p['angle'])) < (0.1 / p['dist']) and p['dist'] < d:
+                        p_hit, p_dist = True, p['dist']
+                        break
+
+                d_final = (p_dist if p_hit else d) * math.cos(ray_a - pa)
+                wh = int(gh / (d_final + 0.001))
+                ceil = max(0, (gh - wh) // 2)
                 
-                # SHADING LOGIC: Index 4 (█) is closest, Index 1 (░) is furthest
-                s_idx = max(1, min(4, int(5 * (1 - d/16))))
-                char = self.shades[s_idx] if hit else " "
+                if p_hit: char = "\033[91m█\033[0m" # Red Player
+                else:
+                    s_idx = max(1, min(4, int(5 * (1 - d/16))))
+                    char = self.shades[s_idx] if hit else " "
                 
-                col = (" " * c) + (char * wh) + ("." * max(0, f))
+                col = (" " * ceil) + (char * wh) + ("." * max(0, gh - ceil - wh))
                 screen_cols.append(col[:gh])
             
             frame_str = "\n".join(["".join(row) for row in zip(*screen_cols)])
 
-        # HUD and FINAL PRINT
-        hud = f" HP: {self.engine.health}% | [TAB] SETTINGS ".center(cols)
-        
-        # We print the world first
-        sys.stdout.write("\033[H" + frame_str + "\n" + hud)
-
-        # OVERLAY FPS AFTER THE WORLD (Guarantees it is visible)
+        sys.stdout.write("\033[H" + frame_str + f"\nHP: {self.engine.health}% | [TAB] MENU".center(cols))
         if self.show_fps:
-            fps_color = self.get_fps_color(fps)
-            fps_display = f"{fps_color}{fps} FPS\033[0m"
-            if self.fps_corner == "top-left":
-                sys.stdout.write(f"\033[1;1H{fps_display}")
-            else:
-                # Move cursor to top-right
-                sys.stdout.write(f"\033[1;{cols-len(str(fps))-4}H{fps_display}")
-
+            coord = "1;1H" if self.fps_corner == "top-left" else f"1;{cols-7}H"
+            sys.stdout.write(f"\033[{coord}{self.get_fps_color(fps)}{fps} FPS\033[0m")
         sys.stdout.flush()
 
     def run(self):
@@ -163,6 +159,7 @@ class PloomClient:
             while self.running:
                 m, r = self.handle_input()
                 self.engine.update(m, r)
+                self.net.broadcast(self.engine.get_state()) # Added broadcast back
                 self.render()
                 time.sleep(0.01)
         finally:

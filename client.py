@@ -30,7 +30,7 @@ class PloomClient:
         self.shades = " ░▒▓█"
         self.frame_times = []
 
-        os.system("") # Enable ANSI on Windows
+        os.system("") 
         sys.stdout.write("\033[?25l\033[?1003h") 
         
         if IS_WINDOWS: 
@@ -69,23 +69,10 @@ class PloomClient:
                 rot_delta = (pos.x - mx) * 0.003
                 user32.SetCursorPos(mx, my)
                 
-                if user32.GetAsyncKeyState(0x57) & 0x8000: move_vec[0] = 1 # W
-                if user32.GetAsyncKeyState(0x53) & 0x8000: move_vec[0] = -1 # S
-                if user32.GetAsyncKeyState(0x41) & 0x8000: move_vec[1] = -1 # A
-                if user32.GetAsyncKeyState(0x44) & 0x8000: move_vec[1] = 1  # D
-        else:
-            # Linux Barebones Keyboard Input
-            tty.setraw(sys.stdin.fileno())
-            while select.select([sys.stdin], [], [], 0)[0]:
-                char = sys.stdin.read(1)
-                if char == '\t': self.paused = not self.paused
-                elif not self.paused:
-                    if char == 'w': move_vec[0] = 1
-                    if char == 's': move_vec[0] = -1
-                    if char == 'a': move_vec[1] = -1
-                    if char == 'd': move_vec[1] = 1
-            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_settings)
-
+                if user32.GetAsyncKeyState(0x57) & 0x8000: move_vec[0] = 1 
+                if user32.GetAsyncKeyState(0x53) & 0x8000: move_vec[0] = -1 
+                if user32.GetAsyncKeyState(0x41) & 0x8000: move_vec[1] = -1 
+                if user32.GetAsyncKeyState(0x44) & 0x8000: move_vec[1] = 1  
         return move_vec, rot_delta
 
     def execute_menu(self):
@@ -150,7 +137,7 @@ class PloomClient:
                 
                 p_hit, p_dist = False, 0
                 for p in visible_peers:
-                    if abs(ray_a - (pa + p['angle'])) < (0.15 / p['dist']) and p['dist'] < d:
+                    if abs(ray_a - (pa + p['angle'])) < (0.3 / p['dist']) and p['dist'] < d:
                         p_hit, p_dist = True, p['dist']
                         break
 
@@ -159,7 +146,7 @@ class PloomClient:
                 ceil = max(0, (gh - wh) // 2)
                 
                 if p_hit:
-                    char = "\033[91m█\033[0m" # ANSI Red
+                    char = "E" 
                 else:
                     s_idx = max(1, min(4, int(5 * (1 - d/16))))
                     char = self.shades[s_idx] if hit else " "
@@ -168,6 +155,7 @@ class PloomClient:
                 screen_cols.append(col[:gh])
             
             frame_str = "\n".join(["".join(row) for row in zip(*screen_cols)])
+            frame_str = frame_str.replace("E", "\033[91m█\033[0m")
 
         sys.stdout.write("\033[H" + frame_str + f"\nHP: {self.engine.health}% | PEERS: {len(self.net.peers)} | [TAB] MENU".center(cols))
         
@@ -188,7 +176,9 @@ class PloomClient:
         finally:
             sys.stdout.write("\033[?1003l\033[?25h\033[2J")
             if IS_WINDOWS: user32.ShowCursor(True)
-            else: termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_settings)
+            else: 
+                try: termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_settings)
+                except: pass
 
 if __name__ == "__main__":
     PloomClient().run()

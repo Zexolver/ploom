@@ -6,7 +6,8 @@ IS_WINDOWS = sys.platform == "win32"
 if IS_WINDOWS:
     import msvcrt
     user32 = ctypes.windll.user32
-    class Point(ctypes.Structure): _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+    class Point(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 else:
     import termios, tty, select
 
@@ -22,18 +23,21 @@ class PloomClient:
         self.paused = True
         self.running = True
         
-        # Settings
         self.show_fps = True
         self.fps_corner = "top-left"
         self.menu_index = 0
         self.menu_options = ["Resume", "Toggle FPS", "FPS Corner", "Exit"]
         self.shades = " ░▒▓█"
-
         self.frame_times = []
-        os.system("") 
+
+        os.system("") # Enable ANSI on Windows
         sys.stdout.write("\033[?25l\033[?1003h") 
         
-        if IS_WINDOWS: user32.ShowCursor(True)
+        if IS_WINDOWS: 
+            user32.ShowCursor(True)
+        else:
+            self.old_settings = termios.tcgetattr(sys.stdin)
+            
         self.net.start()
 
     def get_fps_color(self, fps):
@@ -64,10 +68,24 @@ class PloomClient:
                 mx, my = user32.GetSystemMetrics(0)//2, user32.GetSystemMetrics(1)//2
                 rot_delta = (pos.x - mx) * 0.003
                 user32.SetCursorPos(mx, my)
-                if user32.GetAsyncKeyState(0x57) & 0x8000: move_vec[0] = 1
-                if user32.GetAsyncKeyState(0x53) & 0x8000: move_vec[0] = -1
-                if user32.GetAsyncKeyState(0x41) & 0x8000: move_vec[1] = -1
-                if user32.GetAsyncKeyState(0x44) & 0x8000: move_vec[1] = 1
+                
+                if user32.GetAsyncKeyState(0x57) & 0x8000: move_vec[0] = 1 # W
+                if user32.GetAsyncKeyState(0x53) & 0x8000: move_vec[0] = -1 # S
+                if user32.GetAsyncKeyState(0x41) & 0x8000: move_vec[1] = -1 # A
+                if user32.GetAsyncKeyState(0x44) & 0x8000: move_vec[1] = 1  # D
+        else:
+            # Linux Barebones Keyboard Input
+            tty.setraw(sys.stdin.fileno())
+            while select.select([sys.stdin], [], [], 0)[0]:
+                char = sys.stdin.read(1)
+                if char == '\t': self.paused = not self.paused
+                elif not self.paused:
+                    if char == 'w': move_vec[0] = 1
+                    if char == 's': move_vec[0] = -1
+                    if char == 'a': move_vec[1] = -1
+                    if char == 'd': move_vec[1] = 1
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_settings)
+
         return move_vec, rot_delta
 
     def execute_menu(self):
@@ -90,24 +108,26 @@ class PloomClient:
         fps = len(self.frame_times)
 
         if self.paused:
-            output = []
+            peer_count = len(self.net.peers)
+            status_line = f"PLAYERS ON LAN: {peer_count + 1}".center(cols)
+            
+            output = [status_line, ""]
             for i, opt in enumerate(self.menu_options):
                 prefix = "> " if i == self.menu_index else "  "
                 if i == self.menu_index:
                     output.append(f"\033[7m {prefix}{opt} \033[0m".center(cols + 8))
                 else:
                     output.append(f"{prefix}{opt}".center(cols))
+            
             pad = (gh - len(output)) // 2
             frame_str = "\n".join(([" " * cols] * pad) + output + ([" " * cols] * (gh - pad - len(output))))
         else:
             px, py, pa = self.engine.px, self.engine.py, self.engine.pa
-            fov = self.engine.fov
+            fov = self.engine.fov if hasattr(self.engine, 'fov') else math.pi/3.5
             screen_cols = []
             
-            # Peer Sprites calculation
             visible_peers = []
             for pid, p in self.net.peers.items():
-                if time.time() - p['last_seen'] > 2: continue
                 dx, dy = p['x'] - px, p['y'] - py
                 dist = math.sqrt(dx*dx + dy*dy)
                 angle = math.atan2(dy, dx) - pa
@@ -119,6 +139,7 @@ class PloomClient:
             for x in range(cols):
                 ray_a = (pa - fov/2) + (x/cols) * fov
                 vx, vy = math.cos(ray_a), math.sin(ray_a)
+                
                 d, hit = 0.1, False
                 while d < 16:
                     tx, ty = int(px + vx*d), int(py + vy*d)
@@ -127,10 +148,9 @@ class PloomClient:
                             hit = True; break
                     d += 0.05
                 
-                # Sprite logic
                 p_hit, p_dist = False, 0
                 for p in visible_peers:
-                    if abs(ray_a - (pa + p['angle'])) < (0.1 / p['dist']) and p['dist'] < d:
+                    if abs(ray_a - (pa + p['angle'])) < (0.15 / p['dist']) and p['dist'] < d:
                         p_hit, p_dist = True, p['dist']
                         break
 
@@ -138,7 +158,8 @@ class PloomClient:
                 wh = int(gh / (d_final + 0.001))
                 ceil = max(0, (gh - wh) // 2)
                 
-                if p_hit: char = "\033[91m█\033[0m" # Red Player
+                if p_hit:
+                    char = "\033[91m█\033[0m" # ANSI Red
                 else:
                     s_idx = max(1, min(4, int(5 * (1 - d/16))))
                     char = self.shades[s_idx] if hit else " "
@@ -148,10 +169,12 @@ class PloomClient:
             
             frame_str = "\n".join(["".join(row) for row in zip(*screen_cols)])
 
-        sys.stdout.write("\033[H" + frame_str + f"\nHP: {self.engine.health}% | [TAB] MENU".center(cols))
+        sys.stdout.write("\033[H" + frame_str + f"\nHP: {self.engine.health}% | PEERS: {len(self.net.peers)} | [TAB] MENU".center(cols))
+        
         if self.show_fps:
+            fps_color = self.get_fps_color(fps)
             coord = "1;1H" if self.fps_corner == "top-left" else f"1;{cols-7}H"
-            sys.stdout.write(f"\033[{coord}{self.get_fps_color(fps)}{fps} FPS\033[0m")
+            sys.stdout.write(f"\033[{coord}{fps_color}{fps} FPS\033[0m")
         sys.stdout.flush()
 
     def run(self):
@@ -159,12 +182,13 @@ class PloomClient:
             while self.running:
                 m, r = self.handle_input()
                 self.engine.update(m, r)
-                self.net.broadcast(self.engine.get_state()) # Added broadcast back
+                self.net.broadcast(self.engine.get_state())
                 self.render()
                 time.sleep(0.01)
         finally:
             sys.stdout.write("\033[?1003l\033[?25h\033[2J")
             if IS_WINDOWS: user32.ShowCursor(True)
+            else: termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_settings)
 
 if __name__ == "__main__":
     PloomClient().run()

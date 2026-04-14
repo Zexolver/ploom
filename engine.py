@@ -14,7 +14,7 @@ class GameEngine:
     def load_map(self, filename):
         path = os.path.join("maps", filename)
         if not os.path.exists(path):
-            # Fallback map so the game doesn't crash if file is missing
+            # Fallback map prevents the game from crashing if default.txt is missing
             print(f"Warning: {filename} not found. Using fallback.")
             self.map_size = 5
             return "#####" + "#...#" + "#.#.#" + "#...#" + "#####"
@@ -36,13 +36,9 @@ class GameEngine:
             nx = self.px + math.cos(self.pa + angle_off) * move_speed
             ny = self.py + math.sin(self.pa + angle_off) * move_speed
             
-            # Collision logic
             if 0 <= nx < self.map_size and 0 <= ny < self.map_size:
-                try:
-                    if self.map_data[int(ny) * self.map_size + int(nx)] == '.':
-                        self.px, self.py = nx, ny
-                except IndexError:
-                    pass
+                if self.map_data[int(ny) * self.map_size + int(nx)] == '.':
+                    self.px, self.py = nx, ny
 
     def get_state(self):
         return {"x": self.px, "y": self.py, "a": self.pa, "hp": self.health}
